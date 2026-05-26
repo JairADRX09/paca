@@ -30,6 +30,16 @@ def parse_arguments() -> argparse.Namespace:
         help="Ruta donde se guardarán las imágenes procesadas"
     )
 
+    parser.add_argument(
+        "--calidad",
+        choices=["alta", "web"],
+        default="alta",
+        help=(
+            "alta: WebP lossless, máxima calidad (default) | "
+            "web: WebP optimizado, máximo 500 KB por imagen"
+        )
+    )
+
     return parser.parse_args()
 
 
@@ -46,10 +56,16 @@ def run() -> int:
     args = parse_arguments()
     origin = args.origen.resolve()
     destination = args.destino.resolve()
+    calidad = args.calidad
 
     print("paca - Image Batch Processor")
     print(f"Origen:  {origin}")
     print(f"Destino: {destination}")
+    print(f"Calidad: {calidad.upper()}", end="")
+    if calidad == "web":
+        print("  (máx. 500 KB por imagen)")
+    else:
+        print("  (lossless, sin límite de tamaño)")
     print()
 
     # Pre-flight checks
@@ -79,11 +95,12 @@ def run() -> int:
     for source_path, destination_dir in scan_images(origin, destination):
         print(f"  Procesando: {source_path.name}...", end=" ", flush=True)
 
-        result = process_image(source_path, destination_dir)
+        result = process_image(source_path, destination_dir, calidad=calidad)
 
         if result.success:
             stats.add_success()
-            print("✓")
+            size_kb = result.output_path.stat().st_size / 1024
+            print(f"✓  ({size_kb:.0f} KB)")
         else:
             if result.reason == "corrupted":
                 stats.add_corrupted(source_path)

@@ -8,6 +8,9 @@ from rembg import remove
 
 from .utils import generate_safe_filename, is_system_file
 
+# Límite de tamaño para modo web
+_MAX_WEB_BYTES = 500 * 1024  # 500 KB
+
 
 class ProcessingResult:
     """Resultado del procesamiento de una imagen."""
@@ -23,14 +26,51 @@ class ProcessingResult:
         self.output_path = output_path
 
 
-def process_image(source_path: Path, destination_dir: Path) -> ProcessingResult:
+def _encode_alta(img: Image.Image) -> bytes:
     """
-    Pipeline: Abrir → WebP en RAM → rembg → Guardar
+    WebP lossless — máxima calidad, sin límite de tamaño.
+    Ideal para impresión, edición o archivado.
+    """
+    buf = BytesIO()
+    img.save(buf, format="WEBP", lossless=True)
+    return buf.getvalue()
+
+
+def _encode_web(img: Image.Image) -> bytes:
+    """
+    WebP lossy con calidad decreciente hasta alcanzar ≤ 500 KB.
+    Rango: quality 80 → 20 en pasos de 10.
+    Si ningún paso lo logra, usa quality=20 como mínimo.
+    """
+    for quality in range(80, 10, -10):
+        buf = BytesIO()
+        img.save(buf, format="WEBP", quality=quality)
+        if buf.tell() <= _MAX_WEB_BYTES:
+            return buf.getvalue()
+
+    # Último recurso: calidad mínima aceptable
+    buf = BytesIO()
+    img.save(buf, format="WEBP", quality=20)
+    return buf.getvalue()
+
+
+def process_image(
+    source_path: Path,
+    destination_dir: Path,
+    calidad: str = "alta"
+) -> ProcessingResult:
+    """
+    Pipeline: Abrir → PNG en RAM → rembg → WebP (según calidad) → Guardar
 
     Filtros:
     - Archivos de sistema (.DS_Store, Thumbs.db) → Skip
     - PDFs → Skip
     - Imágenes corruptas → Skip + log
+
+    Args:
+        source_path:     Ruta de la imagen original.
+        destination_dir: Carpeta donde se escribe el resultado.
+        calidad:         "alta" (lossless) | "web" (≤ 500 KB).
     """
     # Filtrar archivos de sistema
     if is_system_file(source_path.name):
@@ -41,26 +81,28 @@ def process_image(source_path: Path, destination_dir: Path) -> ProcessingResult:
         return ProcessingResult(success=False, reason="pdf")
 
     try:
-        # Paso 1: Abrir imagen
         with Image.open(source_path) as img:
 
-            # Paso 2: Convertir a WebP en memoria
-            webp_buffer = BytesIO()
+            # Paso 2: Convertir a PNG en memoria para rembg
+            # PNG preserva todos los detalles para que el modelo los procese
+            png_buffer = BytesIO()
+            img.save(png_buffer, format="PNG")
 
-            if img.mode in ("RGBA", "LA", "P"):
-                img.save(webp_buffer, format="WEBP", lossless=True)
+            # Paso 3: Eliminar fondo — rembg siempre devuelve RGBA PNG
+            png_buffer.seek(0)
+            png_sin_fondo = remove(png_buffer.read())
+
+            # Paso 4: Re-codificar como WebP real según la calidad elegida
+            result_img = Image.open(BytesIO(png_sin_fondo))  # siempre RGBA
+
+            if calidad == "web":
+                final_bytes = _encode_web(result_img)
             else:
-                rgb_img = img.convert("RGB")
-                rgb_img.save(webp_buffer, format="WEBP", quality=95)
+                final_bytes = _encode_alta(result_img)
 
-            # Paso 3: Eliminar fondo con rembg
-            webp_buffer.seek(0)
-            image_with_bg = webp_buffer.read()
-            image_without_bg = remove(image_with_bg)
-
-            # Paso 4: Guardar
+            # Paso 5: Guardar con nombre seguro (nunca sobreescribe)
             safe_path = generate_safe_filename(destination_dir, source_path.stem)
-            safe_path.write_bytes(image_without_bg)
+            safe_path.write_bytes(final_bytes)
 
             return ProcessingResult(success=True, output_path=safe_path)
 
