@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem C:\\\\temp\\\\paca_test\\\\destino -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object FullName, @{N=\"KB\";E={[math]::Round\\($_.Length/1KB,1\\)}})"
+    ]
+  }
+}
